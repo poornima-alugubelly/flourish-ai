@@ -1,8 +1,32 @@
 {
-  "name": "frontend",
+  "name": "flourish-ai-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "description": "AI-powered mental health and personal development journal frontend",
+  "keywords": [
+    "mental health",
+    "journaling",
+    "ai",
+    "personal development",
+    "productivity",
+    "goals",
+    "wellness",
+    "react",
+    "vite",
+    "tailwindcss"
+  ],
+  "author": "Flourish.ai Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/flourish-ai.git",
+    "directory": "frontend"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/flourish-ai/issues"
+  },
+  "homepage": "https://github.com/yourusername/flourish-ai#readme",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
