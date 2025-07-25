@@ -38,7 +38,10 @@ A comprehensive mental health and personal development journaling application th
 
 ## 📸 Screenshots
 
-> _Screenshots and demo GIFs would go here to showcase the UI_
+<img width="1470" height="956" alt="image" src="https://github.com/user-attachments/assets/abc3155f-548b-49d7-bf1d-98a2ce1404e2" />
+<img width="1470" height="956" alt="image" src="https://github.com/user-attachments/assets/533eae43-e441-4505-82e4-be80bf4c4917" />
+
+
 
 ## 🏃‍♂️ Quick Start
 
