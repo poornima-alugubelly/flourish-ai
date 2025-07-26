@@ -123,6 +123,52 @@ class AnalysisResponse(BaseModel):
     processing_time: float
     date: str
 
+class TimetableRequest(BaseModel):
+    analysis: str
+    goals: str
+    date: str
+    preferences: Optional[Dict[str, str]] = {}
+
+class TimeSlot(BaseModel):
+    hour: int
+    activity: str
+    description: str
+    priority: str  # "high", "medium", "low"
+    category: str  # "work", "study", "break", "personal", "exercise", etc.
+
+class TimetableResponse(BaseModel):
+    date: str
+    schedule: List[TimeSlot]
+    summary: str
+    processing_time: float
+
+class AnalyticsRequest(BaseModel):
+    start_date: str
+    end_date: str
+    analysis_type: str  # "patterns", "trends", "goals", "weekly", "monthly"
+
+class PatternAnalysis(BaseModel):
+    pattern_type: str
+    description: str
+    frequency: int
+    confidence: float
+    recommendations: List[str]
+
+class TrendData(BaseModel):
+    date: str
+    value: float
+    category: str
+
+class AnalyticsResponse(BaseModel):
+    analysis_type: str
+    start_date: str
+    end_date: str
+    summary: str
+    patterns: List[PatternAnalysis]
+    trends: List[TrendData]
+    insights: List[str]
+    processing_time: float
+
 class TemplateResponse(BaseModel):
     id: int
     name: str
@@ -769,16 +815,28 @@ def analyze(request: AnalysisRequest, db: Session = Depends(get_db)):
         ai_response = response['message']['content']
         processing_time = time.time() - start_time
         
-        # Store the analysis
-        db_analysis = Analysis(
-            date=analysis_date,
-            notes_content=[note.dict() for note in request.notes],
-            goals_content=request.goals,
-            ai_response=ai_response,
-            model_used="phi3:mini",
-            processing_time=processing_time
-        )
-        db.add(db_analysis)
+        # Update existing analysis or create new one
+        if existing_analysis:
+            # Update the existing analysis for this date
+            existing_analysis.notes_content = [note.dict() for note in request.notes]
+            existing_analysis.goals_content = request.goals
+            existing_analysis.ai_response = ai_response
+            existing_analysis.model_used = "phi3:mini"
+            existing_analysis.processing_time = processing_time
+            existing_analysis.created_at = datetime.now()  # Update timestamp
+            db_analysis = existing_analysis
+        else:
+            # Create new analysis
+            db_analysis = Analysis(
+                date=analysis_date,
+                notes_content=[note.dict() for note in request.notes],
+                goals_content=request.goals,
+                ai_response=ai_response,
+                model_used="phi3:mini",
+                processing_time=processing_time
+            )
+            db.add(db_analysis)
+        
         db.commit()
         
         return AnalysisResponse(
@@ -789,6 +847,174 @@ def analyze(request: AnalysisRequest, db: Session = Depends(get_db)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+# Timetable generation endpoint
+@app.post("/generate-timetable", response_model=TimetableResponse)
+def generate_timetable(request: TimetableRequest, db: Session = Depends(get_db)):
+    start_time = time.time()
+    
+    try:
+        # Parse preferences with defaults
+        wake_time = int(request.preferences.get("wake_time", "7"))
+        sleep_time = int(request.preferences.get("sleep_time", "23"))
+        focus_hours = int(request.preferences.get("focus_hours", "4"))
+        break_frequency = int(request.preferences.get("break_frequency", "90"))  # minutes
+        
+        prompt = f"""
+        Based on the following analysis and goals, create an optimized hour-by-hour schedule for tomorrow ({request.date}).
+        
+        ANALYSIS FROM TODAY:
+        {request.analysis}
+        
+        CURRENT GOALS:
+        {request.goals}
+        
+        PREFERENCES:
+        - Wake up time: {wake_time}:00
+        - Sleep time: {sleep_time}:00
+        - Focus work blocks: {focus_hours} hours total
+        - Break every: {break_frequency} minutes
+        
+        Create a JSON response with the following structure for each hour from {wake_time} to {sleep_time}:
+        {{
+            "hour": [hour number 0-23],
+            "activity": "[short activity name]",
+            "description": "[detailed description with specific actions]",
+            "priority": "[high/medium/low]",
+            "category": "[work/study/break/personal/exercise/meal/leisure]"
+        }}
+        
+        GUIDELINES:
+        1. Based on the analysis, prioritize areas that need improvement (like DSA study if that was identified as lacking)
+        2. Include focused work/study blocks for skill development
+        3. Add regular breaks to prevent burnout
+        4. Balance productivity with self-care
+        5. Include time for meals and personal activities
+        6. Make it realistic and achievable
+        7. Address specific issues mentioned in the analysis
+        
+        Provide ONLY a valid JSON array of time slots, no additional text.
+        """
+
+        response = ollama.chat(model='phi3:mini', messages=[
+            {
+                'role': 'user',
+                'content': prompt,
+            },
+        ])
+
+        ai_response = response['message']['content']
+        processing_time = time.time() - start_time
+        
+        # Try to parse the JSON response
+        try:
+            import json
+            import re
+            
+            # Extract JSON from response if it contains other text
+            json_match = re.search(r'\[.*\]', ai_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+            else:
+                json_str = ai_response
+            
+            schedule_data = json.loads(json_str)
+            
+            # Validate and convert to TimeSlot objects
+            schedule = []
+            for slot in schedule_data:
+                if isinstance(slot, dict) and all(k in slot for k in ['hour', 'activity', 'description', 'priority', 'category']):
+                    schedule.append(TimeSlot(**slot))
+            
+            if not schedule:
+                raise ValueError("No valid time slots found")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            # Fallback to generated schedule if AI response is malformed
+            schedule = generate_fallback_schedule(wake_time, sleep_time, focus_hours, request.analysis)
+        
+        # Generate summary
+        summary = f"Optimized schedule for {request.date} with {len(schedule)} time blocks, focusing on areas identified in your analysis."
+        
+        return TimetableResponse(
+            date=request.date,
+            schedule=schedule,
+            summary=summary,
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Timetable generation failed: {str(e)}")
+
+def generate_fallback_schedule(wake_time: int, sleep_time: int, focus_hours: int, analysis: str) -> List[TimeSlot]:
+    """Generate a basic fallback schedule if AI parsing fails"""
+    schedule = []
+    current_hour = wake_time
+    
+    # Morning routine
+    schedule.append(TimeSlot(
+        hour=current_hour,
+        activity="Morning Routine",
+        description="Wake up, hygiene, light breakfast, prepare for the day",
+        priority="medium",
+        category="personal"
+    ))
+    current_hour += 1
+    
+    # Study/work blocks based on analysis
+    if "DSA" in analysis or "Data Structures" in analysis:
+        for i in range(focus_hours):
+            if current_hour < sleep_time - 2:
+                schedule.append(TimeSlot(
+                    hour=current_hour,
+                    activity="DSA Study",
+                    description="Focused study on Data Structures and Algorithms - practice problems and concepts",
+                    priority="high",
+                    category="study"
+                ))
+                current_hour += 1
+                
+                # Add break after study
+                if i < focus_hours - 1 and current_hour < sleep_time - 1:
+                    schedule.append(TimeSlot(
+                        hour=current_hour,
+                        activity="Break",
+                        description="Rest, hydration, light movement",
+                        priority="medium",
+                        category="break"
+                    ))
+                    current_hour += 1
+    
+    # Fill remaining hours with balanced activities
+    while current_hour < sleep_time:
+        if current_hour == 12 or current_hour == 18:  # Meal times
+            meal = "Lunch" if current_hour == 12 else "Dinner"
+            schedule.append(TimeSlot(
+                hour=current_hour,
+                activity=meal,
+                description=f"Healthy {meal.lower()} and brief relaxation",
+                priority="medium",
+                category="meal"
+            ))
+        elif current_hour > 20:  # Evening
+            schedule.append(TimeSlot(
+                hour=current_hour,
+                activity="Evening Routine",
+                description="Wind down, reflect on day, prepare for tomorrow",
+                priority="low",
+                category="personal"
+            ))
+        else:
+            schedule.append(TimeSlot(
+                hour=current_hour,
+                activity="Productive Work",
+                description="Continue with important tasks and skill development",
+                priority="medium",
+                category="work"
+            ))
+        current_hour += 1
+    
+    return schedule
 
 # Add AI generation for SMART goal fields after the analyze endpoint
 
@@ -927,23 +1153,60 @@ def generate_smart_field(request: SMARTFieldGenerationRequest):
 # Analysis history endpoint
 @app.get("/analysis/history")
 def get_analysis_history(
-    limit: int = Query(10, le=50),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    analyses = db.query(Analysis).order_by(
-        Analysis.created_at.desc()
-    ).limit(limit).all()
+    query = db.query(Analysis)
     
-    return [
-        {
-            "id": analysis.id,
-            "date": analysis.date,
-            "analysis": analysis.ai_response,
-            "processing_time": analysis.processing_time,
-            "created_at": analysis.created_at
+    # Apply filters
+    if search:
+        query = query.filter(Analysis.ai_response.contains(search))
+    if start_date:
+        query = query.filter(Analysis.date >= start_date)
+    if end_date:
+        query = query.filter(Analysis.date <= end_date)
+    
+    # Get total count for pagination
+    total_count = query.count()
+    
+    # Apply pagination
+    offset = (page - 1) * page_size
+    analyses = query.order_by(Analysis.created_at.desc()).offset(offset).limit(page_size).all()
+    
+    # Create summary for each analysis (first 200 characters)
+    def create_summary(text):
+        if not text:
+            return ""
+        summary = text[:200].strip()
+        if len(text) > 200:
+            summary += "..."
+        return summary
+    
+    return {
+        "analyses": [
+            {
+                "id": analysis.id,
+                "date": analysis.date,
+                "analysis": analysis.ai_response,
+                "summary": create_summary(analysis.ai_response),
+                "processing_time": analysis.processing_time,
+                "created_at": analysis.created_at
+            }
+            for analysis in analyses
+        ],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": (total_count + page_size - 1) // page_size,
+            "has_next": page * page_size < total_count,
+            "has_prev": page > 1
         }
-        for analysis in analyses
-    ]
+    }
 
 # Export endpoints
 @app.get("/export/notes")
@@ -1050,6 +1313,350 @@ def export_goals(
         df.to_csv(csv_buffer, index=False)
         
         return {"csv_data": csv_buffer.getvalue()}
+
+# Analytics endpoints
+@app.post("/analytics", response_model=AnalyticsResponse)
+def analyze_historical_data(request: AnalyticsRequest, db: Session = Depends(get_db)):
+    start_time = time.time()
+    
+    try:
+        # Get notes and analyses for the date range
+        notes = db.query(Note).filter(
+            Note.date >= request.start_date,
+            Note.date <= request.end_date
+        ).order_by(Note.date, Note.hour).all()
+        
+        analyses = db.query(Analysis).filter(
+            Analysis.date >= request.start_date,
+            Analysis.date <= request.end_date
+        ).order_by(Analysis.date).all()
+        
+        goals = db.query(Goal).all()
+        
+        if request.analysis_type == "patterns":
+            return analyze_patterns(notes, analyses, goals, request, start_time)
+        elif request.analysis_type == "trends":
+            return analyze_trends(notes, analyses, request, start_time)
+        elif request.analysis_type == "goals":
+            return analyze_goal_progress(goals, notes, analyses, request, start_time)
+        elif request.analysis_type == "weekly":
+            return analyze_weekly_summary(notes, analyses, request, start_time)
+        elif request.analysis_type == "monthly":
+            return analyze_monthly_summary(notes, analyses, request, start_time)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid analysis type")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
+
+def analyze_patterns(notes, analyses, goals, request, start_time):
+    """Analyze patterns across multiple days"""
+    
+    # Group notes by day and extract activities
+    daily_activities = {}
+    for note in notes:
+        if note.date not in daily_activities:
+            daily_activities[note.date] = []
+        if note.content.strip():
+            daily_activities[note.date].append({
+                'hour': note.hour,
+                'content': note.content,
+                'tags': [tag.name for tag in note.tags]
+            })
+    
+    # Create AI prompt for pattern analysis
+    activity_summary = ""
+    for date, activities in daily_activities.items():
+        activity_summary += f"\n{date}:\n"
+        for activity in activities:
+            activity_summary += f"  {activity['hour']}:00 - {activity['content'][:100]}\n"
+    
+    prompt = f"""
+    Analyze the following journal entries from {request.start_date} to {request.end_date} for patterns, habits, and trends.
+    
+    JOURNAL ENTRIES:
+    {activity_summary}
+    
+    ACTIVE GOALS:
+    {chr(10).join([f"- {goal.title}: {goal.description}" for goal in goals if goal.status == 'active'])}
+    
+    Identify:
+    1. Recurring behavioral patterns
+    2. Time-of-day activity patterns  
+    3. Productivity patterns
+    4. Emotional/mood patterns
+    5. Areas of consistent progress or struggle
+    6. Habits that support or hinder goals
+    
+    Provide insights in a structured format focusing on:
+    - What patterns you observe
+    - How frequently they occur
+    - Their impact on goals and wellbeing
+    - Specific recommendations for optimization
+    
+    Analysis:
+    """
+    
+    try:
+        response = ollama.chat(model='phi3:mini', messages=[
+            {'role': 'user', 'content': prompt}
+        ])
+        
+        ai_analysis = response['message']['content']
+        
+        # Extract patterns (simplified - in a real app you might use more sophisticated NLP)
+        patterns = [
+            PatternAnalysis(
+                pattern_type="Activity Pattern",
+                description="Extracted from AI analysis",
+                frequency=len(daily_activities),
+                confidence=0.8,
+                recommendations=["Based on AI analysis"]
+            )
+        ]
+        
+        processing_time = time.time() - start_time
+        
+        return AnalyticsResponse(
+            analysis_type="patterns",
+            start_date=request.start_date,
+            end_date=request.end_date,
+            summary=ai_analysis,
+            patterns=patterns,
+            trends=[],
+            insights=[ai_analysis],
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        print(f"AI analysis failed: {e}")
+        # Fallback analysis
+        patterns = analyze_patterns_fallback(daily_activities, goals)
+        
+        return AnalyticsResponse(
+            analysis_type="patterns",
+            start_date=request.start_date,
+            end_date=request.end_date,
+            summary=f"Pattern analysis for {len(daily_activities)} days of data",
+            patterns=patterns,
+            trends=[],
+            insights=["Fallback pattern analysis completed"],
+            processing_time=time.time() - start_time
+        )
+
+def analyze_patterns_fallback(daily_activities, goals):
+    """Fallback pattern analysis without AI"""
+    patterns = []
+    
+    # Analyze time patterns
+    hour_usage = {}
+    for date, activities in daily_activities.items():
+        for activity in activities:
+            hour = activity['hour']
+            if hour not in hour_usage:
+                hour_usage[hour] = 0
+            hour_usage[hour] += 1
+    
+    most_active_hours = sorted(hour_usage.items(), key=lambda x: x[1], reverse=True)[:3]
+    
+    patterns.append(PatternAnalysis(
+        pattern_type="Time Usage",
+        description=f"Most active hours: {', '.join([f'{h}:00' for h, c in most_active_hours])}",
+        frequency=sum(hour_usage.values()),
+        confidence=0.7,
+        recommendations=[
+            "Consider optimizing your most productive hours",
+            "Plan important tasks during peak activity periods"
+        ]
+    ))
+    
+    # Activity consistency
+    active_days = len(daily_activities)
+    patterns.append(PatternAnalysis(
+        pattern_type="Consistency",
+        description=f"Journaling consistency: {active_days} days with entries",
+        frequency=active_days,
+        confidence=0.9,
+        recommendations=[
+            "Maintain consistent journaling habits" if active_days > 5 else "Try to journal more consistently"
+        ]
+    ))
+    
+    return patterns
+
+def analyze_trends(notes, analyses, request, start_time):
+    """Analyze trends over time"""
+    
+    # Calculate daily activity levels
+    daily_activity = {}
+    for note in notes:
+        if note.date not in daily_activity:
+            daily_activity[note.date] = 0
+        if note.content.strip():
+            daily_activity[note.date] += 1
+    
+    trends = []
+    for date, count in daily_activity.items():
+        trends.append(TrendData(
+            date=date,
+            value=float(count),
+            category="activity_level"
+        ))
+    
+    # Calculate average activity level
+    avg_activity = sum(daily_activity.values()) / len(daily_activity) if daily_activity else 0
+    
+    summary = f"Average daily activity level: {avg_activity:.1f} entries per day"
+    insights = [
+        f"Analyzed {len(daily_activity)} days of data",
+        f"Peak activity: {max(daily_activity.values()) if daily_activity else 0} entries",
+        f"Most active day: {max(daily_activity, key=daily_activity.get) if daily_activity else 'N/A'}"
+    ]
+    
+    return AnalyticsResponse(
+        analysis_type="trends",
+        start_date=request.start_date,
+        end_date=request.end_date,
+        summary=summary,
+        patterns=[],
+        trends=trends,
+        insights=insights,
+        processing_time=time.time() - start_time
+    )
+
+def analyze_goal_progress(goals, notes, analyses, request, start_time):
+    """Analyze goal progress over time"""
+    
+    trends = []
+    goal_insights = []
+    
+    for goal in goals:
+        trends.append(TrendData(
+            date=goal.created_at.strftime('%Y-%m-%d'),
+            value=goal.progress,
+            category=f"goal_{goal.id}"
+        ))
+        
+        if goal.progress > 75:
+            goal_insights.append(f"🎯 {goal.title}: Excellent progress ({goal.progress}%)")
+        elif goal.progress > 50:
+            goal_insights.append(f"📈 {goal.title}: Good progress ({goal.progress}%)")
+        elif goal.progress > 25:
+            goal_insights.append(f"⚠️ {goal.title}: Moderate progress ({goal.progress}%)")
+        else:
+            goal_insights.append(f"🚨 {goal.title}: Needs attention ({goal.progress}%)")
+    
+    active_goals = len([g for g in goals if g.status == 'active'])
+    completed_goals = len([g for g in goals if g.status == 'completed'])
+    
+    summary = f"Goal Overview: {active_goals} active, {completed_goals} completed"
+    
+    patterns = [
+        PatternAnalysis(
+            pattern_type="Goal Achievement",
+            description=f"Completion rate: {completed_goals}/{len(goals)} goals",
+            frequency=completed_goals,
+            confidence=0.9,
+            recommendations=[
+                "Break down large goals into smaller milestones",
+                "Set specific deadlines for better accountability",
+                "Review and adjust goals regularly"
+            ]
+        )
+    ]
+    
+    return AnalyticsResponse(
+        analysis_type="goals",
+        start_date=request.start_date,
+        end_date=request.end_date,
+        summary=summary,
+        patterns=patterns,
+        trends=trends,
+        insights=goal_insights,
+        processing_time=time.time() - start_time
+    )
+
+def analyze_weekly_summary(notes, analyses, request, start_time):
+    """Generate weekly summary analysis"""
+    
+    # Group notes by week
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+    
+    weekly_data = defaultdict(list)
+    
+    for note in notes:
+        note_date = datetime.strptime(note.date, '%Y-%m-%d')
+        week_start = note_date - timedelta(days=note_date.weekday())
+        week_key = week_start.strftime('%Y-%m-%d')
+        weekly_data[week_key].append(note)
+    
+    insights = []
+    trends = []
+    
+    for week_start, week_notes in weekly_data.items():
+        entry_count = len([n for n in week_notes if n.content.strip()])
+        
+        trends.append(TrendData(
+            date=week_start,
+            value=float(entry_count),
+            category="weekly_entries"
+        ))
+        
+        insights.append(f"Week of {week_start}: {entry_count} journal entries")
+    
+    summary = f"Weekly analysis covering {len(weekly_data)} weeks"
+    
+    return AnalyticsResponse(
+        analysis_type="weekly",
+        start_date=request.start_date,
+        end_date=request.end_date,
+        summary=summary,
+        patterns=[],
+        trends=trends,
+        insights=insights,
+        processing_time=time.time() - start_time
+    )
+
+def analyze_monthly_summary(notes, analyses, request, start_time):
+    """Generate monthly summary analysis"""
+    
+    from datetime import datetime
+    from collections import defaultdict
+    
+    monthly_data = defaultdict(list)
+    
+    for note in notes:
+        note_date = datetime.strptime(note.date, '%Y-%m-%d')
+        month_key = note_date.strftime('%Y-%m')
+        monthly_data[month_key].append(note)
+    
+    insights = []
+    trends = []
+    
+    for month, month_notes in monthly_data.items():
+        entry_count = len([n for n in month_notes if n.content.strip()])
+        
+        trends.append(TrendData(
+            date=f"{month}-01",
+            value=float(entry_count),
+            category="monthly_entries"
+        ))
+        
+        insights.append(f"{month}: {entry_count} total entries")
+    
+    summary = f"Monthly analysis covering {len(monthly_data)} months"
+    
+    return AnalyticsResponse(
+        analysis_type="monthly",
+        start_date=request.start_date,
+        end_date=request.end_date,
+        summary=summary,
+        patterns=[],
+        trends=trends,
+        insights=insights,
+        processing_time=time.time() - start_time
+    )
 
 if __name__ == "__main__":
     import uvicorn

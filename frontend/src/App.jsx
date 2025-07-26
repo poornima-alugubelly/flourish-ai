@@ -23,6 +23,8 @@ import { Input } from './components/ui/input';
 import Hour from './components/Hour';
 import GoalManager from './components/GoalManager';
 import SleepPeriodSelector from './components/SleepPeriodSelector';
+import AnalyticsView from './components/AnalyticsView';
+import AnalysisHistoryView from './components/AnalysisHistoryView';
 import useStore from './stores/useStore';
 
 function App() {
@@ -37,11 +39,27 @@ function App() {
     goals,
     analysisHistory,
     activeView,
+    timetable,
+    isGeneratingTimetable,
+    timetablePreferences,
+    analytics,
+    isLoadingAnalytics,
+    analyticsDateRange,
+    analyticsType,
+    analyticsSubView,
     initialize,
     setCurrentDate,
     setDailyReflection,
     setActiveView,
+    setAnalyticsSubView,
     analyzeDay,
+    generateTimetable,
+    updateTimetablePreferences,
+    clearTimetable,
+    loadAnalytics,
+    setAnalyticsDateRange,
+    setAnalyticsType,
+    clearAnalytics,
     exportNotes,
     exportGoals,
   } = useStore();
@@ -118,6 +136,16 @@ function App() {
                 >
                   <Target className="mr-2 h-4 w-4" />
                   Goals
+                </Button>
+                <Button
+                  variant={
+                    activeView === 'analytics' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() => setActiveView('analytics')}
+                >
+                  <BarChart3 className="mr-2 h-4 w-4" />
+                  Analytics
                 </Button>
               </div>
 
@@ -289,19 +317,10 @@ function App() {
                     variant="outline"
                     size="sm"
                     className="w-full justify-start"
-                    disabled
+                    onClick={() => setActiveView('analytics')}
                   >
                     <BarChart3 className="mr-2 h-4 w-4" />
                     View Analytics
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full justify-start"
-                    disabled
-                  >
-                    <History className="mr-2 h-4 w-4" />
-                    View History
                   </Button>
                 </CardContent>
               </Card>
@@ -379,6 +398,184 @@ function App() {
                     </div>
                   </div>
 
+                  {/* Timetable Generation */}
+                  {analysis !==
+                    'Your analysis will appear here...' && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-medium">
+                          Tomorrow's Schedule
+                        </h4>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={generateTimetable}
+                          disabled={isGeneratingTimetable}
+                        >
+                          {isGeneratingTimetable ? (
+                            <>
+                              <div className="mr-2 h-3 w-3 animate-spin rounded-full border-2 border-background border-t-transparent" />
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="mr-2 h-3 w-3" />
+                              Generate Timetable
+                            </>
+                          )}
+                        </Button>
+                      </div>
+
+                      {/* Timetable Preferences */}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <label className="block text-muted-foreground mb-1">
+                            Wake Time
+                          </label>
+                          <Input
+                            type="number"
+                            min="5"
+                            max="11"
+                            value={timetablePreferences.wake_time}
+                            onChange={(e) =>
+                              updateTimetablePreferences({
+                                wake_time: e.target.value,
+                              })
+                            }
+                            className="h-8"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-muted-foreground mb-1">
+                            Sleep Time
+                          </label>
+                          <Input
+                            type="number"
+                            min="20"
+                            max="24"
+                            value={timetablePreferences.sleep_time}
+                            onChange={(e) =>
+                              updateTimetablePreferences({
+                                sleep_time: e.target.value,
+                              })
+                            }
+                            className="h-8"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-muted-foreground mb-1">
+                            Focus Hours
+                          </label>
+                          <Input
+                            type="number"
+                            min="1"
+                            max="8"
+                            value={timetablePreferences.focus_hours}
+                            onChange={(e) =>
+                              updateTimetablePreferences({
+                                focus_hours: e.target.value,
+                              })
+                            }
+                            className="h-8"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-muted-foreground mb-1">
+                            Break Frequency (min)
+                          </label>
+                          <Input
+                            type="number"
+                            min="30"
+                            max="180"
+                            step="15"
+                            value={
+                              timetablePreferences.break_frequency
+                            }
+                            onChange={(e) =>
+                              updateTimetablePreferences({
+                                break_frequency: e.target.value,
+                              })
+                            }
+                            className="h-8"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Timetable Display */}
+                      {timetable && (
+                        <div className="border rounded-md p-4 bg-muted/30">
+                          <div className="flex items-center justify-between mb-3">
+                            <h5 className="font-medium">
+                              Schedule for {timetable.date}
+                            </h5>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={clearTimetable}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+
+                          <p className="text-xs text-muted-foreground mb-3">
+                            {timetable.summary}
+                          </p>
+
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {timetable.schedule.map((slot, index) => (
+                              <div
+                                key={index}
+                                className={`flex items-start p-2 rounded text-xs border-l-4 ${
+                                  slot.priority === 'high'
+                                    ? 'border-red-500 bg-red-50'
+                                    : slot.priority === 'medium'
+                                    ? 'border-yellow-500 bg-yellow-50'
+                                    : 'border-blue-500 bg-blue-50'
+                                }`}
+                              >
+                                <div className="font-mono text-muted-foreground w-12 flex-shrink-0">
+                                  {String(slot.hour).padStart(2, '0')}
+                                  :00
+                                </div>
+                                <div className="flex-1 ml-2">
+                                  <div className="font-medium">
+                                    {slot.activity}
+                                  </div>
+                                  <div className="text-muted-foreground text-xs mt-1">
+                                    {slot.description}
+                                  </div>
+                                  <div className="flex gap-1 mt-1">
+                                    <span
+                                      className={`px-1 py-0.5 rounded text-xs ${
+                                        slot.category === 'study'
+                                          ? 'bg-purple-100 text-purple-700'
+                                          : slot.category === 'work'
+                                          ? 'bg-blue-100 text-blue-700'
+                                          : slot.category === 'break'
+                                          ? 'bg-green-100 text-green-700'
+                                          : slot.category ===
+                                            'personal'
+                                          ? 'bg-orange-100 text-orange-700'
+                                          : slot.category ===
+                                            'exercise'
+                                          ? 'bg-red-100 text-red-700'
+                                          : slot.category === 'meal'
+                                          ? 'bg-yellow-100 text-yellow-700'
+                                          : 'bg-gray-100 text-gray-700'
+                                      }`}
+                                    >
+                                      {slot.category}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Analysis History */}
                   {analysisHistory.length > 0 && (
                     <div className="space-y-2">
@@ -406,9 +603,48 @@ function App() {
               </Card>
             </div>
           </div>
-        ) : (
+        ) : activeView === 'goals' ? (
           /* Goals View */
           <GoalManager />
+        ) : (
+          /* Analytics View */
+          <div className="space-y-6">
+            {/* Analytics Sub-navigation */}
+            {activeView === 'analytics' && (
+              <div className="flex gap-2">
+                <Button
+                  variant={
+                    analyticsSubView === 'current'
+                      ? 'default'
+                      : 'outline'
+                  }
+                  size="sm"
+                  onClick={() => setAnalyticsSubView('current')}
+                >
+                  <BarChart3 className="mr-2 h-4 w-4" />
+                  Current Analysis
+                </Button>
+                <Button
+                  variant={
+                    analyticsSubView === 'history'
+                      ? 'default'
+                      : 'outline'
+                  }
+                  size="sm"
+                  onClick={() => setAnalyticsSubView('history')}
+                >
+                  <History className="mr-2 h-4 w-4" />
+                  Analysis History
+                </Button>
+              </div>
+            )}
+
+            {analyticsSubView === 'current' ? (
+              <AnalyticsView />
+            ) : (
+              <AnalysisHistoryView />
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -60,13 +60,49 @@ const useStore = create(
       // Analysis state
       analysis: 'Your analysis will appear here...',
       analysisHistory: [],
+      analysisHistoryPagination: {
+        page: 1,
+        page_size: 20,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false,
+      },
+      analysisHistoryFilters: {
+        search: '',
+        start_date: '',
+        end_date: '',
+      },
       isAnalyzing: false,
+
+      // Timetable state
+      timetable: null,
+      isGeneratingTimetable: false,
+      timetablePreferences: {
+        wake_time: '7',
+        sleep_time: '23',
+        focus_hours: '4',
+        break_frequency: '90',
+      },
+
+      // Analytics state
+      analytics: null,
+      isLoadingAnalytics: false,
+      analyticsDateRange: {
+        start: format(
+          new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          'yyyy-MM-dd'
+        ), // 30 days ago
+        end: format(new Date(), 'yyyy-MM-dd'),
+      },
+      analyticsType: 'patterns',
 
       // UI state
       selectedTags: [],
       searchQuery: '',
       selectedDate: new Date(),
-      activeView: 'journal', // 'journal' or 'goals'
+      activeView: 'journal', // 'journal', 'goals', or 'analytics'
+      analyticsSubView: 'current', // 'current' or 'history'
 
       // Auto-save state
       hasUnsavedChanges: false,
@@ -81,6 +117,9 @@ const useStore = create(
       },
 
       setActiveView: (view) => set({ activeView: view }),
+
+      setAnalyticsSubView: (subView) =>
+        set({ analyticsSubView: subView }),
 
       updateNote: (time, updates) => {
         set((state) => ({
@@ -648,16 +687,175 @@ const useStore = create(
         }
       },
 
-      loadAnalysisHistory: async () => {
+      loadAnalysisHistory: async (page = 1, filters = null) => {
         try {
+          const state = get();
+          const currentFilters =
+            filters || state.analysisHistoryFilters;
+
+          const params = new URLSearchParams({
+            page: page.toString(),
+            page_size:
+              state.analysisHistoryPagination.page_size.toString(),
+          });
+
+          if (currentFilters.search) {
+            params.append('search', currentFilters.search);
+          }
+          if (currentFilters.start_date) {
+            params.append('start_date', currentFilters.start_date);
+          }
+          if (currentFilters.end_date) {
+            params.append('end_date', currentFilters.end_date);
+          }
+
           const response = await fetch(
-            `${API_BASE}/analysis/history?limit=20`
+            `${API_BASE}/analysis/history?${params.toString()}`
           );
-          const history = await response.json();
-          set({ analysisHistory: history });
+          const result = await response.json();
+
+          set({
+            analysisHistory: result.analyses,
+            analysisHistoryPagination: result.pagination,
+            analysisHistoryFilters: currentFilters,
+          });
         } catch (error) {
           console.error('Failed to load analysis history:', error);
         }
+      },
+
+      // Timetable actions
+      generateTimetable: async () => {
+        const state = get();
+        set({ isGeneratingTimetable: true });
+
+        // Calculate next day
+        const currentDate = new Date(state.currentDate);
+        const nextDay = new Date(
+          currentDate.getTime() + 24 * 60 * 60 * 1000
+        );
+        const nextDayString = nextDay.toISOString().split('T')[0];
+
+        // Get active goals for context
+        const activeGoals = state.goals
+          .filter((g) => g.status === 'active')
+          .map((g) => `${g.title}: ${g.description}`)
+          .join('\n');
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/generate-timetable`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                analysis: state.analysis,
+                goals:
+                  state.dailyReflection +
+                  (activeGoals
+                    ? `\n\nActive Goals:\n${activeGoals}`
+                    : ''),
+                date: nextDayString,
+                preferences: state.timetablePreferences,
+              }),
+            }
+          );
+
+          const result = await response.json();
+          set({
+            timetable: result,
+            isGeneratingTimetable: false,
+          });
+        } catch (error) {
+          console.error('Timetable generation failed:', error);
+          set({
+            timetable: null,
+            isGeneratingTimetable: false,
+          });
+        }
+      },
+
+      updateTimetablePreferences: (preferences) => {
+        set({
+          timetablePreferences: {
+            ...get().timetablePreferences,
+            ...preferences,
+          },
+        });
+      },
+
+      clearTimetable: () => {
+        set({ timetable: null });
+      },
+
+      // Analytics actions
+      loadAnalytics: async (analysisType = null) => {
+        const state = get();
+        const type = analysisType || state.analyticsType;
+
+        set({ isLoadingAnalytics: true });
+
+        try {
+          const response = await fetch(`${API_BASE}/analytics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              start_date: state.analyticsDateRange.start,
+              end_date: state.analyticsDateRange.end,
+              analysis_type: type,
+            }),
+          });
+
+          const result = await response.json();
+          set({
+            analytics: result,
+            analyticsType: type,
+            isLoadingAnalytics: false,
+          });
+        } catch (error) {
+          console.error('Analytics loading failed:', error);
+          set({
+            analytics: null,
+            isLoadingAnalytics: false,
+          });
+        }
+      },
+
+      setAnalyticsDateRange: (dateRange) => {
+        set({
+          analyticsDateRange: {
+            ...get().analyticsDateRange,
+            ...dateRange,
+          },
+        });
+      },
+
+      setAnalyticsType: (type) => {
+        set({ analyticsType: type });
+        // Auto-load analytics when type changes
+        get().loadAnalytics(type);
+      },
+
+      clearAnalytics: () => {
+        set({ analytics: null });
+      },
+
+      // Analysis history pagination and filtering
+      setAnalysisHistoryPage: (page) => {
+        get().loadAnalysisHistory(page);
+      },
+
+      setAnalysisHistoryFilters: (filters) => {
+        get().loadAnalysisHistory(1, filters);
+      },
+
+      clearAnalysisHistoryFilters: () => {
+        const emptyFilters = {
+          search: '',
+          start_date: '',
+          end_date: '',
+        };
+        get().loadAnalysisHistory(1, emptyFilters);
       },
 
       // Search and filter actions
